@@ -7,6 +7,10 @@
 #include <errno.h>
 #include <getopt.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 extern spermfs_context_t *g_ctx;
 
@@ -133,15 +137,27 @@ int main(int argc, char **argv)
         }
 
         /* Ensure the file is large enough for mkfs */
-        off_t file_size = lseek(ctx->tiers[0].fd, 0, SEEK_END);
-        if (file_size < (off_t)(volume_blocks * block_size)) {
-            /* Fallocate or truncate to desired size */
-            if (ftruncate(ctx->tiers[0].fd, (off_t)(volume_blocks * block_size)) < 0) {
-                fprintf(stderr, "Error: cannot resize device %s: %s\n",
-                        device, strerror(errno));
-                close(ctx->tiers[0].fd);
-                free(ctx);
-                return 1;
+        struct stat dev_stat;
+        int is_block = (fstat(ctx->tiers[0].fd, &dev_stat) == 0 &&
+                        S_ISBLK(dev_stat.st_mode));
+        if (is_block && volume_blocks == 1024 * 1024) {
+            /* Auto-detect block device size */
+            uint64_t dev_size = 0;
+            if (ioctl(ctx->tiers[0].fd, BLKGETSIZE64, &dev_size) == 0 && dev_size > 0) {
+                volume_blocks = (uint64_t)(dev_size / block_size);
+            }
+        }
+        if (!is_block) {
+            off_t file_size = lseek(ctx->tiers[0].fd, 0, SEEK_END);
+            if (file_size < (off_t)(volume_blocks * block_size)) {
+                /* Fallocate or truncate to desired size */
+                if (ftruncate(ctx->tiers[0].fd, (off_t)(volume_blocks * block_size)) < 0) {
+                    fprintf(stderr, "Error: cannot resize device %s: %s\n",
+                            device, strerror(errno));
+                    close(ctx->tiers[0].fd);
+                    free(ctx);
+                    return 1;
+                }
             }
         }
         ctx->num_tiers = 1;
