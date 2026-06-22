@@ -33,14 +33,14 @@ static int resolve_path(const char *path, spermfs_inode_t *inode_out,
     if (ret != SPERMAFS_OK) return -EIO;
 
     if (strcmp(path, "/") == 0) {
-        memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
+        if (inode_out) memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
         if (parent_out) *parent_out = current_inode;
         return 0;
     }
 
     while (*path == '/') path++;
     if (*path == '\0') {
-        memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
+        if (inode_out) memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
         if (parent_out) *parent_out = current_inode;
         return 0;
     }
@@ -70,7 +70,7 @@ static int resolve_path(const char *path, spermfs_inode_t *inode_out,
         if (ret != SPERMAFS_OK) return -EIO;
     }
 
-    memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
+    if (inode_out) memcpy(inode_out, &inode, sizeof(spermfs_inode_t));
     return 0;
 }
 
@@ -192,21 +192,17 @@ static int bridge_mknod(const char *path, mode_t mode, dev_t dev, void *user_dat
     }
     strncpy(name, slash + 1, 255);
     name[255] = '\0';
-    fprintf(stderr, "SPERMAFS_DBG: p=%s n=%s ino=%llu\n", parent_path, name,
-            (unsigned long long)ctx->superblock.root_inode);
 
     spermfs_inode_t parent;
     uint64_t parent_num;
     int ret = resolve_path(parent_path, &parent, &parent_num);
-    if (ret != 0) { fprintf(stderr, "SPERMAFS_DBG: resolve parent failed %d\n", ret); return ret; }
+    if (ret != 0) return ret;
 
     spermfs_inode_t inode;
     ret = spermfs_inode_alloc(ctx, &inode, (uint64_t)mode);
-    if (ret != SPERMAFS_OK) { fprintf(stderr, "SPERMAFS_DBG: alloc failed %d\n", ret); return -EIO; }
-    fprintf(stderr, "SPERMAFS_DBG: new inode=%llu mode=%llu\n",
-            (unsigned long long)inode.inode_number, (unsigned long long)inode.mode);
+    if (ret != SPERMAFS_OK) return -EIO;
 
-    inode.parent_inode = parent_num;
+    inode.parent_inode = parent.inode_number;
     strncpy(inode.name, name, SPERMAFS_MAX_NAME_LEN - 1);
     inode.name[SPERMAFS_MAX_NAME_LEN - 1] = '\0';
 
@@ -214,13 +210,12 @@ static int bridge_mknod(const char *path, mode_t mode, dev_t dev, void *user_dat
     spermfs_journal_log(ctx, inode.inode_number, 0, &inode, sizeof(spermfs_inode_t));
 
     ret = spermfs_inode_write(ctx, &inode);
-    if (ret != SPERMAFS_OK) { fprintf(stderr, "SPERMAFS_DBG: write failed %d\n", ret); return -EIO; }
+    if (ret != SPERMAFS_OK) return -EIO;
 
-    ret = create_entry(parent_num, name, inode.inode_number);
-    if (ret != SPERMAFS_OK) { fprintf(stderr, "SPERMAFS_DBG: entry failed %d\n", ret); return -EIO; }
+    ret = create_entry(parent.inode_number, name, inode.inode_number);
+    if (ret != SPERMAFS_OK) return -EIO;
 
     spermfs_journal_commit(ctx);
-    fprintf(stderr, "SPERMAFS_DBG: mknod OK\n");
     return 0;
 }
 
@@ -252,7 +247,7 @@ static int bridge_unlink(const char *path, void *user_data)
     if (ret != 0) return ret;
 
     spermfs_journal_begin(ctx);
-    remove_entry(parent_num, name);
+    remove_entry(parent.inode_number, name);
     spermfs_inode_free(ctx, inode.inode_number);
     spermfs_journal_commit(ctx);
     return 0;
@@ -285,18 +280,18 @@ static int bridge_rename(const char *from, const char *to, unsigned int flags,
     strncpy(to_name, slash + 1, 255);
 
     uint64_t from_parent_num, to_parent_num;
-    spermfs_inode_t inode;
+    spermfs_inode_t inode, from_parent_inode, to_parent_inode;
     int ret = resolve_path(from, &inode, NULL);
     if (ret != 0) return ret;
-    ret = resolve_path(from_parent, NULL, &from_parent_num);
+    ret = resolve_path(from_parent, &from_parent_inode, &from_parent_num);
     if (ret != 0) return ret;
-    ret = resolve_path(to_parent, NULL, &to_parent_num);
+    ret = resolve_path(to_parent, &to_parent_inode, &to_parent_num);
     if (ret != 0) return ret;
 
     spermfs_journal_begin(ctx);
-    remove_entry(from_parent_num, from_name);
-    create_entry(to_parent_num, to_name, inode.inode_number);
-    inode.parent_inode = to_parent_num;
+    remove_entry(from_parent_inode.inode_number, from_name);
+    create_entry(to_parent_inode.inode_number, to_name, inode.inode_number);
+    inode.parent_inode = to_parent_inode.inode_number;
     strncpy(inode.name, to_name, SPERMAFS_MAX_NAME_LEN - 1);
     inode.name[SPERMAFS_MAX_NAME_LEN - 1] = '\0';
     spermfs_inode_write(ctx, &inode);
@@ -488,11 +483,8 @@ static int bridge_readdir(const char *path, void *buf,
 
         if (strcmp(path, "/") == 0)
             st.st_ino = ctx->superblock.root_inode;
-        else {
-            uint64_t parent_num;
-            resolve_path(path, NULL, &parent_num);
-            st.st_ino = parent_num;
-        }
+        else
+            st.st_ino = dir_inode.parent_inode;
         priv.entry_index = 2;
         filler(buf, "..", &st, 2);
     }
