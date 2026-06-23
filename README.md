@@ -3,7 +3,7 @@
 **S**ecure **P**erformance **E**nhanced **R**eliable **M**odular **A**rchive **F**ile **S**ystem
 
 **Author:** qvkap \<qvkapp@gmail.com\>  
-**Version:** 0.1.0 beta  
+**Version:** 0.2.0 beta  
 **License:** MIT
 
 ---
